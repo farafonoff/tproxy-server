@@ -13,7 +13,8 @@ carrier endpoint.
   and upload trailers under normal HTTP reverse-proxy semantics.
 - **Correct:** token provenance must survive expiration and restart. Tokens now
   contain a random nonce and a kind-separated 128-bit HMAC tag, under an independent
-  persistent key. The encoded length remains 43 characters. A valid MAC never
+  persistent key. A keyed 32-bit filter tag in the nonce keeps the per-offset scan
+  of unauthenticated metadata to one block cipher call, not two HMACs. The encoded length remains 43 characters. A valid MAC never
   substitutes for a live bootstrap/session lookup or protocol validation.
 - **Correct:** genuine secrets in malformed metadata must stay local. Recognition
   runs before canonical routing, checks all URL/header values (including duplicate

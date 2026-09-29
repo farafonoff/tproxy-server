@@ -1,6 +1,7 @@
 package session
 
 import (
+	"crypto/cipher"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -63,8 +64,9 @@ type Capacity struct {
 }
 
 type Manager struct {
-	config   config.Config
-	tokenKey [sha256.Size]byte
+	config      config.Config
+	tokenKey    [sha256.Size]byte
+	tokenFilter cipher.Block
 
 	mu                   sync.Mutex
 	bootstraps           map[[sha256.Size]byte]*bootstrap
@@ -106,6 +108,7 @@ func NewManager(value config.Config, tokenKey [sha256.Size]byte) *Manager {
 	result := &Manager{
 		config:              value,
 		tokenKey:            tokenKey,
+		tokenFilter:         newTokenFilter(tokenKey),
 		bootstraps:          make(map[[sha256.Size]byte]*bootstrap),
 		bootstrapsPerIP:     make(map[string]int),
 		sessions:            make(map[[sha256.Size]byte]*Session),

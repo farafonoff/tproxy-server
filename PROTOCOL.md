@@ -226,11 +226,18 @@ The bootstrap remains unconsumed so the byte-identical creation request can retr
 ### Token representation and restart behavior
 
 Bootstrap and session tokens remain opaque 32-byte values encoded as 43 canonical
-unpadded base64url characters. Their server-side layout is now a 16-byte random
-nonce followed by a 16-byte truncated HMAC-SHA256. The MAC input is
-`"tproxy-server-token-v1\x00" || kind || nonce`, where kind is byte 1 for bootstrap
-and byte 2 for session. The independent 32-byte signing key persists across relay
-restarts. Clients must not interpret the layout; all existing endpoint names,
+unpadded base64url characters. Their server-side layout is a 16-byte nonce
+followed by a 16-byte truncated HMAC-SHA256. The MAC input is
+`"tproxy-server-token-v2\x00" || kind || nonce`, where kind is byte 1 for bootstrap
+and byte 2 for session. The nonce is 12 random bytes and a 4-byte filter tag: the
+first 4 bytes of AES-128, keyed with the first 16 bytes of
+HMAC-SHA256(signing key, `"tproxy-server-token-filter-v2\x00"`), over the random
+bytes padded with zeros. The relay checks every base64 offset of unauthenticated
+request metadata for tokens; the keyed tag lets it skip the HMACs for all but
+2^-32 of those candidates. The independent 32-byte signing key persists across
+relay restarts. Tokens from v1 relays, which carried a 16-byte random nonce, are
+not recognized after the upgrade restart; like any restart, it discards their
+sessions and clients reload the bridge. Clients must not interpret the layout; all existing endpoint names,
 headers, capability derivation, and four carrier modes are unchanged.
 
 A valid MAC establishes provenance only. Session state, bootstrap expiry, replay,
