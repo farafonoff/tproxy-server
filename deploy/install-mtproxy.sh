@@ -40,6 +40,11 @@ if [[ ! -x "$source_directory/objs/bin/mtproto-proxy" ]] ||
 	test -x "$build_directory/objs/bin/mtproto-proxy"
 	printf '%s\n' "$mtproxy_commit" > "$build_directory/.tproxy-commit"
 	chown -R root:root "$build_directory"
+	# install.sh uses umask 077, so the mtproxy user's make would otherwise
+	# leave /opt/MTProxy and the binary mode 0700. The unit runs as mtproxy
+	# with ProtectSystem=strict and then fails with status 203/EXEC.
+	find "$build_directory" -type d -exec chmod 0755 {} +
+	chmod 0755 "$build_directory/objs/bin/mtproto-proxy"
 	if [[ -e "$source_directory" ]]; then
 		mv "$source_directory" "$source_directory.before-tproxy.$(date +%Y%m%d%H%M%S)"
 	fi
