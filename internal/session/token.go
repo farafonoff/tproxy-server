@@ -22,6 +22,7 @@ const (
 
 var (
 	tokenContext       = []byte("tproxy-server-token-v2\x00")
+	tokenContextV1     = []byte("tproxy-server-token-v1\x00")
 	tokenFilterContext = []byte("tproxy-server-token-filter-v2\x00")
 )
 
@@ -73,10 +74,10 @@ func (c *TokenClassifier) filterTag(nonce []byte) []byte {
 }
 
 // The result aliases the classifier and is valid until its next use.
-func (c *TokenClassifier) tokenMAC(kind TokenClass, nonce []byte) []byte {
+func (c *TokenClassifier) tokenMAC(context []byte, kind TokenClass, nonce []byte) []byte {
 	c.mac.Reset()
 	c.kind[0] = byte(kind)
-	_, _ = c.mac.Write(tokenContext)
+	_, _ = c.mac.Write(context)
 	_, _ = c.mac.Write(c.kind[:])
 	_, _ = c.mac.Write(nonce)
 	return c.mac.Sum(c.sum[:0])[:16]
@@ -88,8 +89,8 @@ func (c *TokenClassifier) Classify(decoded []byte) TokenClass {
 		subtle.ConstantTimeCompare(decoded[tokenRandomBytes:tokenNonceBytes], c.filterTag(decoded)) != 1 {
 		return TokenExternal
 	}
-	bootstrap := subtle.ConstantTimeCompare(decoded[tokenNonceBytes:], c.tokenMAC(TokenBootstrap, decoded[:tokenNonceBytes]))
-	session := subtle.ConstantTimeCompare(decoded[tokenNonceBytes:], c.tokenMAC(TokenSession, decoded[:tokenNonceBytes]))
+	bootstrap := subtle.ConstantTimeCompare(decoded[tokenNonceBytes:], c.tokenMAC(tokenContext, TokenBootstrap, decoded[:tokenNonceBytes]))
+	session := subtle.ConstantTimeCompare(decoded[tokenNonceBytes:], c.tokenMAC(tokenContext, TokenSession, decoded[:tokenNonceBytes]))
 	if bootstrap == 1 {
 		return TokenBootstrap
 	}
@@ -99,6 +100,20 @@ func (c *TokenClassifier) Classify(decoded []byte) TokenClass {
 	return TokenExternal
 }
 
+// SignedV1 recognizes tokens issued before the filter tag: a 16-byte random
+// nonce under the v1 MAC context. The upgrade restart discards their sessions,
+// but pages still holding them must fail locally and reconnect, not send their
+// carrier requests to the website. It costs two HMACs, so callers check only
+// the fields where the bridge page sends credentials.
+func (c *TokenClassifier) SignedV1(decoded []byte) bool {
+	if len(decoded) != 32 {
+		return false
+	}
+	bootstrap := subtle.ConstantTimeCompare(decoded[16:], c.tokenMAC(tokenContextV1, TokenBootstrap, decoded[:16]))
+	session := subtle.ConstantTimeCompare(decoded[16:], c.tokenMAC(tokenContextV1, TokenSession, decoded[:16]))
+	return bootstrap|session == 1
+}
+
 func (m *Manager) newToken(kind TokenClass) (string, [sha256.Size]byte, error) {
 	var input [32]byte
 	if _, err := rand.Read(input[:tokenRandomBytes]); err != nil {
@@ -106,7 +121,7 @@ func (m *Manager) newToken(kind TokenClass) (string, [sha256.Size]byte, error) {
 	}
 	classifier := m.NewTokenClassifier()
 	copy(input[tokenRandomBytes:tokenNonceBytes], classifier.filterTag(input[:]))
-	copy(input[tokenNonceBytes:], classifier.tokenMAC(kind, input[:tokenNonceBytes]))
+	copy(input[tokenNonceBytes:], classifier.tokenMAC(tokenContext, kind, input[:tokenNonceBytes]))
 	return base64.RawURLEncoding.EncodeToString(input[:]), sha256.Sum256(input[:]), nil
 }
 

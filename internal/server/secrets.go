@@ -29,10 +29,10 @@ func (s *Server) bridgeProfile(r *http.Request) *config.Profile {
 // headers, malformed queries, cookies, referrers, or wrong-path requests. Bodies
 // and trailers are deliberately not read: public uploads must remain streaming.
 func (s *Server) hasInternalSecret(r *http.Request) bool {
-	if s.config.LegacyTokenDrain && legacyCarrierCredential(r) {
+	scan := secretScan{manager: s.manager}
+	if scan.carrierCredential(r, s.config.LegacyTokenDrain) {
 		return true
 	}
-	scan := secretScan{manager: s.manager}
 	if scan.contains(r.URL.String()) || scan.contains(r.Host) {
 		return true
 	}
@@ -49,17 +49,20 @@ func (s *Server) hasInternalSecret(r *http.Request) bool {
 	return false
 }
 
-func legacyCarrierCredential(r *http.Request) bool {
+// carrierCredential looks for a canonical token in the fields where the bridge
+// page sends one: any such token while draining, otherwise a signed v1 token.
+func (scan *secretScan) carrierCredential(r *http.Request, drain bool) bool {
 	for _, value := range r.Header.Values("Authorization") {
-		if _, ok := bearerToken(value); ok {
+		if token, ok := bearerToken(value); ok && (drain || scan.signedV1(token)) {
 			return true
 		}
 	}
-	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
+	// Canonical spelling: Values would allocate to canonicalize it per request.
+	for _, value := range r.Header["Sec-Websocket-Protocol"] {
 		for _, protocol := range strings.Split(value, ",") {
 			token, _, _, ok := webSocketCredentials(strings.TrimSpace(protocol))
 			if ok {
-				if _, ok := bearerToken("Bearer " + token); ok {
+				if _, ok := bearerToken("Bearer " + token); ok && (drain || scan.signedV1(token)) {
 					return true
 				}
 			}
@@ -75,6 +78,19 @@ type secretScan struct {
 	manager *session.Manager
 	tokens  *session.TokenClassifier
 	decoded []byte
+}
+
+func (scan *secretScan) classifier() *session.TokenClassifier {
+	if scan.tokens == nil {
+		scan.tokens = scan.manager.NewTokenClassifier()
+	}
+	return scan.tokens
+}
+
+func (scan *secretScan) signedV1(token string) bool {
+	var decoded [32]byte
+	n, err := base64.RawURLEncoding.Decode(decoded[:], []byte(token))
+	return err == nil && n == len(decoded) && scan.classifier().SignedV1(decoded[:])
 }
 
 func (scan *secretScan) contains(text string) bool {
@@ -117,9 +133,7 @@ func (scan *secretScan) containsInRun(run string) bool {
 	if len(run) < windowChars {
 		return false
 	}
-	if scan.tokens == nil {
-		scan.tokens = scan.manager.NewTokenClassifier()
-	}
+	tokens := scan.classifier()
 	for phase := 0; phase < 4 && phase+windowChars <= len(run); phase++ {
 		chars := run[phase:]
 		if len(chars)%4 == 1 {
@@ -135,7 +149,7 @@ func (scan *secretScan) containsInRun(run string) bool {
 		}
 		for offset := 0; offset+windowBytes <= n; offset += 3 {
 			value := decoded[offset : offset+windowBytes]
-			if scan.tokens.Classify(value) != session.TokenExternal ||
+			if tokens.Classify(value) != session.TokenExternal ||
 				scan.manager.MatchCapability(value) != nil {
 				return true
 			}

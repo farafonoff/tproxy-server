@@ -2,6 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +100,59 @@ func TestSecretsFoundAtEveryOffsetInsideBase64Runs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Pages loaded before the v2 token upgrade still hold v1 tokens after the
+// restart. Their carrier requests must fail locally, so the page reconnects at
+// once and its bodies never reach the website; unsigned look-alikes stay public.
+func TestSignedV1TokensFailLocallyAfterUpgrade(t *testing.T) {
+	application, _ := newTestServer(t, "127.0.0.1:1")
+	defer application.Shutdown()
+	forwarded := 0
+	application.publicUpstream = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		forwarded++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	key, err := config.ReadTokenKey(application.config.TokenKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var otherKey [32]byte
+	for _, kind := range []session.TokenClass{session.TokenBootstrap, session.TokenSession} {
+		token := signV1Token(key, kind)
+		if application.manager.ClassifyToken(token) != session.TokenExternal {
+			t.Fatal("v1 token classified as current")
+		}
+		for _, target := range []string{"/api/v1/session", "/api/v1/up", "/api/v1/down"} {
+			r := httptest.NewRequest(http.MethodPost, "http://"+testHost+target, strings.NewReader("frames"))
+			r.Header.Set("Authorization", "Bearer "+token)
+			assertPrivateRejection(t, application, r)
+		}
+		for _, protocol := range []string{"tproxy-v1." + token, "tproxy-lane-v1." + token + ".1"} {
+			r := httptest.NewRequest(http.MethodGet, "http://"+testHost+"/api/v1/ws", nil)
+			r.Header.Set("Sec-WebSocket-Protocol", protocol)
+			assertPrivateRejection(t, application, r)
+		}
+		for _, public := range []string{signV1Token(otherKey, kind), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
+			r := httptest.NewRequest(http.MethodPost, "http://"+testHost+"/api/v1/up", strings.NewReader("frames"))
+			r.Header.Set("Authorization", "Bearer "+public)
+			application.Handler().ServeHTTP(httptest.NewRecorder(), r)
+		}
+	}
+	if forwarded != 4 {
+		t.Fatalf("unsigned or foreign bearers were not public: %d", forwarded)
+	}
+}
+
+func signV1Token(key [32]byte, kind session.TokenClass) string {
+	var token [32]byte
+	_, _ = rand.Read(token[:16])
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write([]byte("tproxy-server-token-v1\x00"))
+	_, _ = mac.Write([]byte{byte(kind)})
+	_, _ = mac.Write(token[:16])
+	copy(token[16:], mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(token[:])
 }
 
 func headerRequest(value string) *http.Request {

@@ -235,9 +235,12 @@ HMAC-SHA256(signing key, `"tproxy-server-token-filter-v2\x00"`), over the random
 bytes padded with zeros. The relay checks every base64 offset of unauthenticated
 request metadata for tokens; the keyed tag lets it skip the HMACs for all but
 2^-32 of those candidates. The independent 32-byte signing key persists across
-relay restarts. Tokens from v1 relays, which carried a 16-byte random nonce, are
-not recognized after the upgrade restart; like any restart, it discards their
-sessions and clients reload the bridge. Clients must not interpret the layout; all existing endpoint names,
+relay restarts. Tokens from v1 relays carried a 16-byte random nonce under the
+`"tproxy-server-token-v1\x00"` context. The upgrade restart discards their
+sessions like any restart; the relay still verifies the v1 MAC in `Authorization`
+bearers and carrier WebSocket subprotocols, where the bridge page sends them, so
+those requests fail locally and the page reloads instead of reaching the website.
+Elsewhere in request metadata only v2 tokens are recognized. Clients must not interpret the layout; all existing endpoint names,
 headers, capability derivation, and four carrier modes are unchanged.
 
 A valid MAC establishes provenance only. Session state, bootstrap expiry, replay,
