@@ -50,10 +50,11 @@ func (s *Server) hasInternalSecret(r *http.Request) bool {
 }
 
 // carrierCredential looks for a canonical token in the fields where the bridge
-// page sends one: any such token while draining, otherwise a signed v1 token.
+// page sends one: any such token while draining, otherwise a signed one, with
+// or without the filter tag.
 func (scan *secretScan) carrierCredential(r *http.Request, drain bool) bool {
 	for _, value := range r.Header.Values("Authorization") {
-		if token, ok := bearerToken(value); ok && (drain || scan.signedV1(token)) {
+		if token, ok := bearerToken(value); ok && (drain || scan.signed(token)) {
 			return true
 		}
 	}
@@ -62,7 +63,7 @@ func (scan *secretScan) carrierCredential(r *http.Request, drain bool) bool {
 		for _, protocol := range strings.Split(value, ",") {
 			token, _, _, ok := webSocketCredentials(strings.TrimSpace(protocol))
 			if ok {
-				if _, ok := bearerToken("Bearer " + token); ok && (drain || scan.signedV1(token)) {
+				if _, ok := bearerToken("Bearer " + token); ok && (drain || scan.signed(token)) {
 					return true
 				}
 			}
@@ -87,10 +88,10 @@ func (scan *secretScan) classifier() *session.TokenClassifier {
 	return scan.tokens
 }
 
-func (scan *secretScan) signedV1(token string) bool {
+func (scan *secretScan) signed(token string) bool {
 	var decoded [32]byte
 	n, err := base64.RawURLEncoding.Decode(decoded[:], []byte(token))
-	return err == nil && n == len(decoded) && scan.classifier().SignedV1(decoded[:])
+	return err == nil && n == len(decoded) && scan.classifier().Signed(decoded[:])
 }
 
 func (scan *secretScan) contains(text string) bool {

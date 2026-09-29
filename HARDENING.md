@@ -16,8 +16,9 @@ carrier endpoint.
   persistent key. A keyed 32-bit filter tag in the nonce keeps the per-offset scan
   of unauthenticated metadata to one block cipher call, not two HMACs, and
   capability matching first looks up an 8-byte capability prefix, so the cost does
-  not grow with the profile count. Signed v1 tokens stay local in carrier
-  credential fields, so the v2 upgrade needs no drain window. The encoded length remains 43 characters. A valid MAC never
+  not grow with the profile count. Untagged tokens stay local in carrier
+  credential fields and the MAC is unchanged, so neither the upgrade nor a
+  rollback needs a drain window. The encoded length remains 43 characters. A valid MAC never
   substitutes for a live bootstrap/session lookup or protocol validation.
 - **Correct:** genuine secrets in malformed metadata must stay local. Recognition
   runs before canonical routing, checks all URL/header values (including duplicate
