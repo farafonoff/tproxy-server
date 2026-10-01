@@ -1,0 +1,52 @@
+# Caddy is the only process that binds an externally reachable port. It proxies
+# every path to the relay, which stays the single gateway for the operator site,
+# the bridge page, and the carrier transport.
+#
+# TPROXY_SITE_ADDRESS selects the mode:
+#   https://HOSTNAME   direct deployment, Caddy obtains a public certificate
+#   http://:80         Cloudflare Tunnel deployment, the tunnel terminates TLS
+#
+# ACME_EMAIL is optional; Caddy only needs it to create an ACME account for
+# issuance, and an empty value is left out of the config entirely so a tunnel
+# deployment does not have to set it.
+{
+	admin off
+
+	servers {
+		protocols h1 h2
+		# read_body maps to Go's ReadTimeout and must stay well above the
+		# relay's long_poll (25s) so parked polls are never cut, while still
+		# bounding a slow-body client at this hop.
+		timeouts {
+			read_header 10s
+			read_body 60s
+		}
+	}
+}
+
+{$TPROXY_SITE_ADDRESS:http://:80} {
+	encode zstd gzip
+
+	header {
+		-Via
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	# One backend serves the whole surface: the operator site, the bridge page
+	# for a valid capability, and the API. Proxying every path keeps a single
+	# public gateway so no path exposes different encoding, range, method, or
+	# proxy behavior than another.
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			response_header_timeout 40s
+		}
+	}
+
+	handle_errors {
+		header {
+			Cache-Control "no-store"
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		}
+		respond "{http.error.status_code} {http.error.status_text}" {http.error.status_code}
+	}
+}

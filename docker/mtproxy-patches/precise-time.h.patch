@@ -1,0 +1,15 @@
+--- a/common/precise-time.h
++++ b/common/precise-time.h
+@@ -34,6 +34,12 @@
+   __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
+   return ( (unsigned long long)lo)|( ((unsigned long long)hi)<<32 );
+ }
++
++#elif defined(__aarch64__)
++#include <stdint.h>
++static __inline__ unsigned long long rdtsc(void) {
++  uint64_t v; __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v)); return v;
++}
+ #endif
+ 
+ /* net-event.h */

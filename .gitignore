@@ -6,3 +6,7 @@
 /*.test
 /*.prof
 .DS_Store
+
+# local configuration and secrets
+.env
+/token.key

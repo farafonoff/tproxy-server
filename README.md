@@ -88,6 +88,15 @@ changing files under `public_dir`; the static site is read once at start-up.
 - an operator-owned static site or a web application bound to a private loopback
   port.
 
+> **This fork also supports a container deployment on any architecture.** A
+> [`Dockerfile`](Dockerfile) and `docker-compose.yml` run the relay, the backend
+> and Caddy in one container, published through a Cloudflare Tunnel so no public
+> IP address and no inbound 80/443 are needed. Official MTProxy builds x86-only;
+> `docker/build-mtproxy.sh` plus `docker/mtproxy-patches/` extend it to aarch64
+> without changing the pinned, checksummed source. See
+> [`docker/README.md`](docker/README.md) for the layout, the cross-architecture
+> details, and the NAT trap that applies to any container deployment.
+
 The automated installer is intended for a clean server on which Caddy may own ports
 80/443. It backs up an existing `/etc/caddy/Caddyfile`, but it then replaces the
 active Caddy configuration. If the server already hosts other sites, use the manual

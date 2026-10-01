@@ -1,0 +1,99 @@
+name: tproxy-server
+
+# relay + MTProxy + Caddy in one container, published through a Cloudflare
+# Tunnel so no public IP or inbound 80/443 is needed.
+#
+#   scripts/gen-env.sh          # writes .env with a fresh secret
+#   $EDITOR .env                # set TPROXY_HOSTNAME, TUNNEL_TOKEN
+#   docker compose up -d --build
+#   docker compose --profile tunnel up -d
+
+services:
+  tproxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tproxy-server:local
+    container_name: tproxy
+    restart: unless-stopped
+    environment:
+      TPROXY_HOSTNAME: "${TPROXY_HOSTNAME:?TPROXY_HOSTNAME is required}"
+      TPROXY_SECRET: "${TPROXY_SECRET:?TPROXY_SECRET is required - run scripts/gen-env.sh}"
+      TPROXY_BASE_PATH: "${TPROXY_BASE_PATH:-}"
+      TPROXY_CARRIER_MODE: "${TPROXY_CARRIER_MODE:-https}"
+      # Serve the site from the mounted /srv/tproxy-site. Set this to a loopback
+      # address instead to have the relay delegate to a real application; the
+      # relay requires exactly one of the two modes.
+      TPROXY_PUBLIC_UPSTREAM: "${TPROXY_PUBLIC_UPSTREAM:-}"
+      TPROXY_WORKERS: "${MTPROXY_WORKERS:-1}"
+      TPROXY_MAX_CONNECTIONS: "${MTPROXY_MAX_CONNECTIONS:-4096}"
+      # <local>:<public> for the middle-end address. Required behind any NAT,
+      # including a container bridge; without it MTProxy announces an address
+      # Telegram cannot reach and every stream stalls with no error anywhere.
+      TPROXY_NAT_INFO: "${TPROXY_NAT_INFO:-}"
+      # Behind a Cloudflare Tunnel the tunnel terminates TLS, so Caddy serves
+      # plain HTTP on the container port and must not also try to obtain a
+      # public certificate. The site address binds a port; the public hostname
+      # still arrives as the Host header, which is what the relay derives its
+      # bridge capability from.
+      TPROXY_SITE_ADDRESS: "http://:80"
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+    ports:
+      # Caddy is the only published port. The relay (8080/8081) and MTProxy
+      # (2398/8888) stay on loopback inside the container by design.
+      - "127.0.0.1:${LOCAL_HTTP_PORT:-8080}:80"
+    volumes:
+      # Replace this with your own site. See docker/site/index.html for why the
+      # repository does not ship a real one.
+      - ./docker/site:/srv/tproxy-site:ro
+      - tproxy-config:/etc/tproxy-server
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The entrypoint writes /etc/tproxy-server/{config,profiles,token.key} into
+    # a volume as root, and Caddy binds 80, so the container needs these three.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    networks:
+      - tproxy
+
+  tunnel:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-2026.9.3}
+    container_name: tproxy-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      tproxy:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${TUNNEL_TOKEN:-}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - tproxy
+
+networks:
+  tproxy:
+    name: tproxy
+    driver: bridge
+
+volumes:
+  tproxy-config:

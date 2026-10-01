@@ -1,0 +1,31 @@
+--- a/common/cpuid.c
++++ b/common/cpuid.c
+@@ -19,7 +19,9 @@
+ */
+ 
+ #include <assert.h>
++#if defined(__x86_64__) || defined(__i386__)
+ #include <cpuid.h>
++#endif
+ 
+ #include "cpuid.h"
+ 
+@@ -33,6 +35,7 @@
+     return &cached;
+   }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+   unsigned int a;
+   assert(
+     __get_cpuid(1,
+@@ -45,4 +48,10 @@
+ 
+   cached.magic = CPUID_MAGIC;
+   return &cached;
++#else
++  /* No CPUID on this architecture: report no SSE4.2/PCLMUL so callers
++     fall back to the portable table implementations. */
++  static kdb_cpuid_t nocpu = { .magic = CPUID_MAGIC, .ebx = 0, .ecx = 0, .edx = 0 };
++  return &nocpu;
++#endif
+ }

@@ -1,0 +1,18 @@
+--- a/common/server-functions.h
++++ b/common/server-functions.h
+@@ -110,9 +110,15 @@
+   asm volatile("": : :"memory");
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static inline void mfence (void) {
+   asm volatile ("mfence": : :"memory");
+ }
++#else
++static inline void mfence (void) {
++  __atomic_thread_fence (__ATOMIC_SEQ_CST);
++}
++#endif
+ 
+ //extern struct multicast_host multicast_hosts[];
+ //extern int multicast_hosts_num;

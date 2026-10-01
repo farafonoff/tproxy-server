@@ -1,0 +1,87 @@
+--- a/common/crc32c.c
++++ b/common/crc32c.c
+@@ -303,7 +303,7 @@
+ #define CRC32C_REFLECTED_X8191 0xcdc220ddll
+ #define CRC32C_REFLECTED_X16383 0x1acaec54ll
+ 
+-#ifdef __LP64__
++#if defined(__x86_64__) && defined(__LP64__)
+ static unsigned crc32c_partial_sse42 (const void *data, long len, unsigned crc) {
+   const char *p = data;
+   unsigned long long c = crc;
+@@ -527,38 +527,6 @@
+   return crc;
+ }
+ 
+-#else
+-static unsigned crc32c_partial_sse42 (const void *data, long len, unsigned crc) {
+-  const char *p = data;
+-  while ((((uintptr_t) p) & 3) && (len > 0)) {
+-    asm volatile (
+-       "crc32b (%2), %1\n\t"
+-     : "=r" (crc)
+-     : "0"  (crc), "r" (p)
+-    );
+-    p++;
+-    len--;
+-  }
+-  while (len >= 4) {
+-    asm volatile (
+-       "crc32l (%2), %1\n\t"
+-     : "=r" (crc)
+-     : "0"  (crc), "r" (p)
+-    );
+-    p += 4;
+-    len -= 4;
+-  }
+-  while (len > 0) {
+-    asm volatile (
+-       "crc32b (%2), %1\n\t"
+-     : "=r" (crc)
+-     : "0"  (crc), "r" (p)
+-    );
+-    p++;
+-    len--;
+-  }
+-  return crc;
+-}
+ #endif
+ 
+ unsigned crc32c_partial_four_tables (const void *data, long len, unsigned crc) {
+@@ -614,6 +582,7 @@
+   return gf32_combine_generic (crc32c_powers, crc1, len2) ^ crc2;
+ }
+ 
++#if defined(__x86_64__) || defined(__i386__)
+ static unsigned crc32c_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2) {
+   static unsigned int crc32c_powers[252] __attribute__ ((aligned(16)));
+   if (len2 <= 0) {
+@@ -639,14 +608,16 @@
+   );
+   return crc ^ ((unsigned) (T >> 32)) ^ crc2;
+ }
++#endif
+ 
+ static void crc32c_init (void) __attribute__ ((constructor));
+ void crc32c_init (void) {
+-  kdb_cpuid_t *p = kdb_cpuid ();
+   compute_crc32c_combine = &crc32c_combine_generic;
++#if defined(__x86_64__)
++  kdb_cpuid_t *p = kdb_cpuid ();
+   if (p->ecx & (1 << 20)) {
+     crc32c_partial = crc32c_partial_sse42;
+-#ifdef __LP64__
++#if defined(__LP64__) && defined(__x86_64__)
+     if (p->ecx & 2) {
+       crc32c_partial = crc32c_partial_sse42_clmul;
+       compute_crc32c_combine = &crc32c_combine_clmul;
+@@ -655,6 +626,9 @@
+   } else {
+     crc32c_partial = &crc32c_partial_four_tables;
+   }
++#else
++  crc32c_partial = &crc32c_partial_four_tables;
++#endif
+ }
+ 
+ crc32_partial_func_t crc32c_partial;

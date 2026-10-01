@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Placeholder site</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.6 system-ui, sans-serif; margin: 0; padding: 3rem 1.5rem; }
+  main { max-width: 40rem; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: .5rem; }
+  code { background: color-mix(in srgb, currentColor 12%, transparent); padding: .1em .35em; border-radius: 3px; }
+  .warn { border-left: 3px solid #d97706; padding-left: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>This is a placeholder site</h1>
+  <p>
+    The relay is running, but it is serving this default page instead of a real
+    website. That is fine for a first test: a bridge request
+    (<code>GET /?bridge=&lt;capability&gt;</code>) is still answered correctly.
+  </p>
+  <p class="warn">
+    <strong>Replace this before real use.</strong> The relay deliberately ships
+    no public website, because many operators deploying the same starter page
+    would give active probers a reliable fingerprint. Mount your own site over
+    <code>/srv/tproxy-site</code>, or point the relay's
+    <code>public_upstream</code> at an application on a loopback port.
+  </p>
+  <p>
+    Do not route static files or a site application around the relay on this
+    hostname. The relay must stay the one gateway so that encoding, response
+    headers, and method handling do not expose a separate transport surface.
+  </p>
+</main>
+</body>
+</html>
