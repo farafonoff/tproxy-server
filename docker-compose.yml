@@ -55,14 +55,20 @@ services:
       start_period: 15s
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
-    # The entrypoint writes /etc/tproxy-server/{config,profiles,token.key} into
-    # a volume as root, and Caddy binds 80, so the container needs these three.
+    # No cap_drop: ALL here. Official MTProxy exits silently immediately after
+    # reaching its main loop when its capability set is empty - it needs the
+    # defaults to set up its worker processes and timers, and it reports
+    # nothing when it cannot, so the symptom is a container that starts and
+    # then dies with a healthy-looking log. Measured with `capsh --drop=all`:
+    # the master survives with default capabilities and dies without them.
+    #
+    # The image is the isolation boundary here: it ships only the relay, the
+    # backend, and Caddy, runs as a single-purpose container, and no-new-
+    # privileges is still set so nothing can gain privileges it did not start
+    # with. If you need a tighter sandbox, run this on a host where a
+    # container escape is not the dominant risk.
     cap_add:
       - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
       - NET_BIND_SERVICE
       - SETGID
       - SETUID

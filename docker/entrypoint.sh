@@ -29,7 +29,13 @@ else
 	client_secret="$secret"
 fi
 
-cat >"$profiles_file" <<EOF
+# Both generated files are installed atomically via a temp file. Writing them
+# in place would fail on every restart after the first: the file is created
+# 0400, and a plain ">" redirect cannot reopen a file it does not have write
+# permission on. That failure needs DAC_OVERRIDE to work around, and holding
+# DAC_OVERRIDE makes official MTProxy abort at startup.
+profiles_tmp=$(mktemp "$config_dir/.profiles.XXXXXX")
+cat >"$profiles_tmp" <<EOF
 {
   "profiles": [
     {
@@ -41,7 +47,9 @@ cat >"$profiles_file" <<EOF
   ]
 }
 EOF
-chmod 0400 "$profiles_file"
+chmod 0400 "$profiles_tmp"
+mv -f "$profiles_tmp" "$profiles_file"
+chown root:mtproxy "$profiles_file"
 log "profiles written (carrier_mode=${TPROXY_CARRIER_MODE:-https})"
 
 # ------------------------------------------------------------------ site --
@@ -70,7 +78,8 @@ fi
 # Every listener is loopback. Caddy is the only process that binds an
 # externally reachable port, and it is the only thing the compose file
 # publishes.
-cat >"$config_file" <<EOF
+config_tmp=$(mktemp "$config_dir/.config.XXXXXX")
+cat >"$config_tmp" <<EOF
 {
   "public_hostname": "$hostname",
   "base_path": "${TPROXY_BASE_PATH:-}",
@@ -92,6 +101,8 @@ cat >"$config_file" <<EOF
   }
 }
 EOF
+chmod 0600 "$config_tmp"
+mv -f "$config_tmp" "$config_file"
 
 # ------------------------------------------------------------------ token --
 # A missing or permissive key fails startup; no ephemeral key is generated,
@@ -111,25 +122,47 @@ chmod 0400 "$config_dir/token.key"
 # <local>:<public> for that case; see README.md.
 
 log "starting MTProxy"
-# `su` needs a single shell-quoted command string. sh has no %q, so quote the
-# known-safe arguments explicitly: the secret is hex and the NAT pair is
-# <address>:<address>.
+# MTProxy must receive "--nat-info <local>:<public>" as ONE argv entry. It used
+# to be passed through `su -c "<string>"`, which re-parses the string in a
+# second shell: the value split on whitespace, so MTProxy got a truncated
+# "--nat-info <local>" plus a stray positional argument. The symptom is a proxy
+# that accepts client connections and then never answers - the handshake dies
+# silently, which looks exactly like a healthy but idle backend.
+#
+# The entrypoint already runs as root and MTProxy drops privileges itself via
+# -u, so the command is exec'd directly instead of being handed to a nested
+# shell. That keeps every argument intact and drops a layer of quoting.
 nat_args=""
-if [ -n "${TPROXY_NAT_INFO:-}" ]; then
-	nat_args="--nat-info ${TPROXY_NAT_INFO}"
-	log "MTProxy NAT mode: $nat_args"
+nat_info="${TPROXY_NAT_INFO:-}"
+if [ -n "$nat_info" ]; then
+	case "$nat_info" in
+		*:*)
+			nat_args="--nat-info=$nat_info"
+			log "MTProxy NAT mode: $nat_args"
+			;;
+		*)
+			log "TPROXY_NAT_INFO must be <local>:<public>, got '$nat_info'; ignoring it"
+			;;
+	esac
 fi
 
-mtproxy_command="/usr/local/bin/mtproto-proxy -u mtproxy -p 8888 -H 2398"
-mtproxy_command="$mtproxy_command -S $secret"
-mtproxy_command="$mtproxy_command --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf"
-mtproxy_command="$mtproxy_command -M ${MTPROXY_WORKERS:-1} -C ${MTPROXY_MAX_CONNECTIONS:-4096}"
-if [ -n "$nat_args" ]; then
-	mtproxy_command="$mtproxy_command $nat_args"
-fi
-
+# The secret is hex and the remaining values are paths and integers, so the
+# unquoted expansions below are safe; set -- keeps each one a single argv entry.
 # shellcheck disable=SC2086
-su -s /bin/sh mtproxy -c "$mtproxy_command" &
+set -- /usr/local/bin/mtproto-proxy \
+	-u mtproxy \
+	-p 8888 \
+	-H 2398 \
+	-S "$secret" \
+	--aes-pwd /etc/mtproxy/proxy-secret \
+	/etc/mtproxy/proxy-multi.conf \
+	-M "${MTPROXY_WORKERS:-1}" \
+	-C "${MTPROXY_MAX_CONNECTIONS:-4096}"
+if [ -n "$nat_args" ]; then
+	set -- "$@" "$nat_args"
+fi
+
+"$@" &
 mtproxy_pid=$!
 
 log "starting relay"
