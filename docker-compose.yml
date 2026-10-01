@@ -27,10 +27,12 @@ services:
       TPROXY_PUBLIC_UPSTREAM: "${TPROXY_PUBLIC_UPSTREAM:-}"
       TPROXY_WORKERS: "${MTPROXY_WORKERS:-1}"
       TPROXY_MAX_CONNECTIONS: "${MTPROXY_MAX_CONNECTIONS:-4096}"
-      # <local>:<public> for the middle-end address. Required behind any NAT,
-      # including a container bridge; without it MTProxy announces an address
-      # Telegram cannot reach and every stream stalls with no error anywhere.
-      TPROXY_NAT_INFO: "${TPROXY_NAT_INFO:-}"
+      # The public IPv4 Telegram sees this host arriving from. Only meaningful on
+      # a host whose public address is on an interface, or behind a 1:1 NAT that
+      # preserves the source port. See "Port-rewriting NAT" in docker/README.md:
+      # behind CGNAT this cannot work, because MTProxy's middle-end key includes
+      # the source port and there is no way to tell it the port mapping.
+      TPROXY_PUBLIC_IP: "${TPROXY_PUBLIC_IP:-}"
       # Behind a Cloudflare Tunnel the tunnel terminates TLS, so Caddy serves
       # plain HTTP on the container port and must not also try to obtain a
       # public certificate. The site address binds a port; the public hostname
@@ -40,7 +42,9 @@ services:
       ACME_EMAIL: "${ACME_EMAIL:-}"
     ports:
       # Caddy is the only published port. The relay (8080/8081) and MTProxy
-      # (2398/8888) stay on loopback inside the container by design.
+      # (2398/8888) stay on loopback inside the container by design: nothing
+      # outside the container needs to reach them, and the backend must not be
+      # reachable from the network.
       - "127.0.0.1:${LOCAL_HTTP_PORT:-8080}:80"
     volumes:
       # Replace this with your own site. See docker/site/index.html for why the

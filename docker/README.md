@@ -13,11 +13,25 @@ upstream `deploy/install.sh` reference layout:
    host's firewall or its port 80, so the firewall rule and the Caddy TLS mode
    are replaced accordingly. Only Caddy binds a published port.
 
+## Requirements
+
+The relay, the site and the tunnel work anywhere. **The backend does not.** It
+needs a host whose public IPv4 is either on an interface or behind a 1:1 NAT
+that preserves the source port - a VPS, a cloud instance, a dedicated server.
+
+A Cloudflare Tunnel solves *inbound* reachability, which is what this
+deployment needed most, but it does nothing for the *outbound* middle-end. If
+your host is behind CGNAT or any other port-rewriting NAT, everything will start
+and look healthy while no Telegram traffic ever flows. Check
+[Port-rewriting NAT](#port-rewriting-nat-this-cannot-work-behind-cgnat) before
+debugging anything else; it is the most common way this fails.
+
 ## Quick start
 
 ```bash
-scripts/gen-env.sh          # .env with a fresh secret and a detected NAT pair
-$EDITOR .env                # set TPROXY_HOSTNAME and TUNNEL_TOKEN
+scripts/preflight.sh         # can this host carry Telegram traffic at all?
+scripts/gen-env.sh           # .env with a fresh secret; warns if it cannot
+$EDITOR .env                 # set TPROXY_HOSTNAME and TUNNEL_TOKEN
 docker compose up -d --build
 ```
 
@@ -73,23 +87,67 @@ All of it lives in `.env`; see `.env.example`.
 | `TPROXY_SECRET` | **required.** `openssl rand -hex 16`. The client-facing secret. |
 | `TPROXY_BASE_PATH` | optional. Moves the bridge off the site root. |
 | `TPROXY_CARRIER_MODE` | `https` (default), `https-lanes`, `websocket`, `websocket-lanes`. |
-| `TPROXY_NAT_INFO` | `<local>:<public>` for MTProxy's middle-end. See below. |
+| `TPROXY_PUBLIC_IP` | the public IPv4 Telegram sees this host arriving from. See below. |
 | `TPROXY_PUBLIC_UPSTREAM` | delegate the site to a loopback app instead of `/srv/tproxy-site`. |
 | `TPROXY_SITE_ADDRESS` | `http://:80` for a tunnel, `https://HOSTNAME` for direct. |
 | `MTPROXY_WORKERS` / `MTPROXY_MAX_CONNECTIONS` | backend process limits. |
 
-## The NAT trap
+## Port-rewriting NAT: this cannot work behind CGNAT
 
-MTProxy derives the AES keys for its middle-end session from its own **source
-address**. Behind any NAT - including a container bridge, 1:1 NAT, or a cloud
-instance - the address MTProxy sees is not the one Telegram sees, the two sides
-derive different keys, and every middle-end connection is dropped right after
-the handshake.
+**Read this before deploying anywhere unusual.** Official MTProxy mixes the
+endpoints' **IP addresses *and* ports** into the AES key that protects its
+middle-end handshake (`net/net-crypto-aes.c`, `aes_create_keys`):
 
-This fails silently. Clients complete the obfuscated2 handshake, the relay
-accepts streams and grants `WINDOW`, and then every stream stalls forever with
-no error on any layer. `TPROXY_NAT_INFO=<local>:<public>` fixes it;
-`scripts/gen-env.sh` fills it in by default.
+```c
+*((unsigned *)(str + 36))       = server_ip;
+*((unsigned short *)(str + 40)) = client_port;
+*((unsigned *)(str + 48))       = client_ip;
+*((unsigned short *)(str + 52)) = server_port;
+```
+
+MTProxy's only translation facility is `nat_translate_ip()`
+(`net/net-connections.c`). There is no port equivalent anywhere in the codebase,
+and every call site passes `c->our_port` / `c->remote_port` through unmodified.
+
+That gives three cases:
+
+| network | port preserved? | works? |
+| --- | --- | --- |
+| public address on the interface | yes | yes, no `--nat-info` needed |
+| 1:1 / static NAT (EC2, GCE) | yes | yes, `--nat-info` fixes the address |
+| **CGNAT / symmetric NAT** | **no** | **no - not fixable** |
+
+Behind CGNAT the carrier also rewrites the **source port** to a random high
+port. The DC hashes the port it observed, MTProxy hashes the port it chose, and
+no configuration can bridge that. The handshake completes, the reply goes out,
+and the DC closes the connection because it cannot decrypt it.
+
+The symptom is silent and easy to misread. `readyz` stays 200, the container
+stays healthy, clients connect, streams open, and no data ever comes back. The
+only real signal, at `-v -v -v -v`, is a steady stream of:
+
+```
+Disconnected from RPC Middle-End (fd=25)
+```
+
+Confirm your situation before spending time on anything else:
+
+```bash
+scripts/preflight.sh
+```
+
+It reports the public and local addresses, detects CGNAT from either the public
+address or a `100.64.0.0/10` local address, and explains the consequence.
+
+If the public address is not listed on any interface, and your egress is a
+`100.64.0.0/10` address (RFC 6598 carrier-grade NAT), this deployment cannot
+carry Telegram traffic. Use a VPS with a public IPv4 on the interface.
+
+`TPROXY_PUBLIC_IP` exists for the 1:1-NAT case, where the address must be
+corrected. The entrypoint pairs it with this container's own address - the first
+half has to match the address MTProxy sees on its own socket, and inside a
+container that is the container address, not the host's - and detects the public
+side at startup when it is left empty.
 
 ## The public site
 
@@ -174,5 +232,6 @@ docker/entrypoint.sh             renders config, supervises the three processes
 docker/Caddyfile                 site address, TLS mode, single gateway
 docker/refresh-mtproxy-config.sh daily routing-data refresh
 docker/site/                     placeholder site (replace it)
-scripts/gen-env.sh               .env with a fresh secret and NAT pair
+scripts/preflight.sh               can this host carry Telegram traffic at all?
+scripts/gen-env.sh                 .env with a fresh secret; warns if it cannot
 ```

@@ -116,35 +116,63 @@ chown root:mtproxy "$config_dir/token.key"
 chmod 0400 "$config_dir/token.key"
 
 # ----------------------------------------------------------------- mtproxy --
-# Behind a container bridge the host is 1:1 NATed, so MTProxy would announce an
-# address Telegram cannot reach and every middle-end connection would die right
-# after the handshake - silently, on every layer. TPROXY_NAT_INFO must carry
-# <local>:<public> for that case; see README.md.
+# The backend's middle-end needs --nat-info <local>:<public>.
+#
+# Telegram mixes the endpoints' addresses into the AES key that protects the
+# middle-end handshake (net/net-crypto-aes.c: aes_create_keys), so both ends
+# must independently hash the same address pair. The transport is plain TCP and
+# the connection really does establish; it is dropped immediately afterwards,
+# because Telegram sees the public source address while MTProxy only knows the
+# container's. The failure is silent on every layer: clients connect, streams
+# open, and no data ever comes back.
+#
+# Two things make the rule easy to get wrong, and both are handled here:
+#
+#   - The first half must be the address MTProxy sees on its own socket, which
+#     inside a container is the container address, not the host's LAN address.
+#     nat_translate_ip() only substitutes on an exact match
+#     (net/net-connections.c:2173), so a host address never matches and the
+#     rule is silently inert. It is derived from the running container instead
+#     of being configured, so it cannot go stale across restarts.
+#   - On CGNAT the public address is not on any interface and is not stable.
+#     It is detected at startup rather than pinned in configuration.
 
 log "starting MTProxy"
-# MTProxy must receive "--nat-info <local>:<public>" as ONE argv entry. It used
-# to be passed through `su -c "<string>"`, which re-parses the string in a
-# second shell: the value split on whitespace, so MTProxy got a truncated
-# "--nat-info <local>" plus a stray positional argument. The symptom is a proxy
-# that accepts client connections and then never answers - the handshake dies
-# silently, which looks exactly like a healthy but idle backend.
-#
-# The entrypoint already runs as root and MTProxy drops privileges itself via
-# -u, so the command is exec'd directly instead of being handed to a nested
-# shell. That keeps every argument intact and drops a layer of quoting.
-nat_args=""
-nat_info="${TPROXY_NAT_INFO:-}"
-if [ -n "$nat_info" ]; then
-	case "$nat_info" in
-		*:*)
-			nat_args="--nat-info=$nat_info"
-			log "MTProxy NAT mode: $nat_args"
-			;;
-		*)
-			log "TPROXY_NAT_INFO must be <local>:<public>, got '$nat_info'; ignoring it"
-			;;
-	esac
+
+# Only the first IPv4 is usable: MTProxy's translation table is 32-bit.
+detect_public_ip() {
+	ip=""
+	for url in https://ifconfig.co/ip https://api.ipify.org https://ifconfig.me/ip; do
+		ip=$(curl --fail --silent --show-error --max-time 10 \
+			--proto '=https' --tlsv1.2 "$url" 2>/dev/null | tr ',[:space:]' '\n' |
+			grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' | head -1)
+		[ -n "$ip" ] && break
+	done
+	printf '%s' "$ip"
+}
+
+public_ip="${TPROXY_PUBLIC_IP:-}"
+if [ -z "$public_ip" ]; then
+	public_ip=$(detect_public_ip)
 fi
+
+local_ip=$(hostname -i 2>/dev/null | awk '{print $1}')
+
+nat_args=""
+if [ -n "$public_ip" ] && [ -n "$local_ip" ]; then
+	nat_args="--nat-info=$local_ip:$public_ip"
+	log "MTProxy NAT mode: --nat-info $local_ip:$public_ip"
+	if [ "$local_ip" = "$public_ip" ]; then
+		log "note: local and public addresses are identical, so no translation is in effect"
+	fi
+else
+	log "WARNING: could not determine the public IPv4 address (set TPROXY_PUBLIC_IP)."
+	log "WARNING: the middle-end will very likely fail silently - every Telegram"
+	log "WARNING: connection will be dropped right after the handshake because the"
+	log "WARNING: AES key is derived from an address the DC does not see. Set"
+	log "WARNING: TPROXY_PUBLIC_IP, or egress to an address-lookup service."
+fi
+
 
 # The secret is hex and the remaining values are paths and integers, so the
 # unquoted expansions below are safe; set -- keeps each one a single argv entry.
